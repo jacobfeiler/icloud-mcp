@@ -124,6 +124,31 @@ async function handleSendEmail(args) {
 }
 
 /**
+ * Handler: Save draft
+ */
+async function handleSaveDraft(args) {
+  if (!isLocalMode()) {
+    return formatError(new Error('save-draft is only available in LOCAL mode (Mail.app). Cloud mode has no IMAP APPEND support for drafts in this server.'));
+  }
+
+  const result = await localClient.saveDraft({
+    to: args.to,
+    cc: args.cc,
+    bcc: args.bcc,
+    subject: args.subject,
+    body: args.body
+  });
+
+  if (result.success) {
+    return formatSuccess(
+      `Draft saved successfully!\n\n${args.to ? `To: ${args.to}\n` : ''}${args.cc ? `CC: ${args.cc}\n` : ''}Subject: ${args.subject || '(no subject)'}`
+    );
+  } else {
+    return formatError(new Error('Failed to save draft'));
+  }
+}
+
+/**
  * Handler: Search emails
  */
 async function handleSearchEmails(args) {
@@ -229,6 +254,20 @@ const emailTools = [
     handler: withErrorHandler(handleSendEmail, 'send-email')
   },
   {
+    name: 'save-draft',
+    title: 'Save Email Draft',
+    description: 'Saves an email as a draft in Mail.app without sending it. LOCAL mode only - cloud mode has no way to write a draft over IMAP in this server. Same fields as send-email, but nothing is transmitted; the message lands in the Drafts mailbox for later editing/sending from Mail.app.',
+    inputSchema: {
+      to: z.string().optional().describe('Recipient email address(es), comma-separated (optional for a draft)'),
+      cc: z.string().optional().describe('CC recipient(s), comma-separated'),
+      bcc: z.string().optional().describe('BCC recipient(s), comma-separated'),
+      subject: z.string().optional().describe('Email subject'),
+      body: z.string().optional().describe('Email body content')
+    },
+    annotations: {"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false},
+    handler: withErrorHandler(handleSaveDraft, 'save-draft')
+  },
+  {
     name: 'search-emails',
     outputSchema: listOutput('Matching emails'),
     title: 'Search Emails',
@@ -272,6 +311,7 @@ module.exports = {
   handleListEmails,
   handleReadEmail,
   handleSendEmail,
+  handleSaveDraft,
   handleSearchEmails,
   handleMarkAsRead,
   handleListFolders

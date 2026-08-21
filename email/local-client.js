@@ -119,6 +119,48 @@ async function sendEmail({ to, cc, bcc, subject, body }) {
 }
 
 /**
+ * Save an email as a draft in Mail.app without sending it
+ * @param {Object} options - Email options
+ * @returns {Promise<Object>} - Save result
+ */
+async function saveDraft({ to, cc, bcc, subject, body }) {
+  const toRecipients = to ? (Array.isArray(to) ? to : [to]) : [];
+  const ccRecipients = cc ? (Array.isArray(cc) ? cc : [cc]) : [];
+  const bccRecipients = bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : [];
+
+  let script = `
+    tell application "Mail"
+      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject || '')}", content:"${escapeAppleScript(body || '')}", visible:false}
+      tell newMessage
+  `;
+
+  // Add To recipients
+  for (const recipient of toRecipients) {
+    script += `\n        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
+  }
+
+  // Add CC recipients
+  for (const recipient of ccRecipients) {
+    script += `\n        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
+  }
+
+  // Add BCC recipients
+  for (const recipient of bccRecipients) {
+    script += `\n        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
+  }
+
+  script += `
+      end tell
+      save newMessage
+    end tell
+    return "saved"
+  `;
+
+  await runAppleScript(script);
+  return { success: true, message: 'Draft saved successfully' };
+}
+
+/**
  * Search emails
  * @param {Object} options - Search options
  * @returns {Promise<Array>} - Matching emails
@@ -250,6 +292,7 @@ module.exports = {
   listEmails,
   readEmail,
   sendEmail,
+  saveDraft,
   searchEmails,
   markAsRead,
   listFolders,
