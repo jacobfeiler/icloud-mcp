@@ -77,42 +77,66 @@ async function readEmail(emailId) {
 }
 
 /**
+ * Build the AppleScript that produces `newMessage` and then runs finalCommand
+ * against it. Two shapes:
+ *
+ * - inReplyTo set: uses Mail's own `reply` command against the referenced
+ *   message, so In-Reply-To/References, the "Re:" subject, the quoted body,
+ *   and the recipient all come from Mail.app itself the way a real reply
+ *   would - `to` and `subject` are ignored, since reply() already derives
+ *   them correctly and overriding them would defeat the point.
+ * - inReplyTo unset: builds a blank outgoing message, as before.
+ *
+ * @param {Object} options
+ * @returns {string} - Full AppleScript
+ */
+function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand }) {
+  const ccRecipients = cc ? (Array.isArray(cc) ? cc : [cc]) : [];
+  const bccRecipients = bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : [];
+
+  let script = '\n    tell application "Mail"\n';
+
+  if (inReplyTo) {
+    script += `      set theMessage to message id ${asInt(inReplyTo)}\n`;
+    script += `      set newMessage to reply theMessage without opening window${replyToAll ? ' with reply to all' : ''}\n`;
+    script += `      tell newMessage\n`;
+    script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
+    for (const recipient of ccRecipients) {
+      script += `        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+    }
+    for (const recipient of bccRecipients) {
+      script += `        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+    }
+    script += `      end tell\n`;
+  } else {
+    const toRecipients = to ? (Array.isArray(to) ? to : [to]) : [];
+    script += `      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject || '')}", content:"${escapeAppleScript(body || '')}", visible:false}\n`;
+    script += `      tell newMessage\n`;
+    for (const recipient of toRecipients) {
+      script += `        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+    }
+    for (const recipient of ccRecipients) {
+      script += `        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+    }
+    for (const recipient of bccRecipients) {
+      script += `        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+    }
+    script += `      end tell\n`;
+  }
+
+  script += `      ${finalCommand}\n`;
+  script += '    end tell\n';
+  return script;
+}
+
+/**
  * Send an email
  * @param {Object} options - Email options
  * @returns {Promise<Object>} - Send result
  */
-async function sendEmail({ to, cc, bcc, subject, body }) {
-  const toRecipients = Array.isArray(to) ? to : [to];
-  const ccRecipients = cc ? (Array.isArray(cc) ? cc : [cc]) : [];
-  const bccRecipients = bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : [];
-
-  let script = `
-    tell application "Mail"
-      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject)}", content:"${escapeAppleScript(body)}", visible:false}
-      tell newMessage
-  `;
-
-  // Add To recipients
-  for (const recipient of toRecipients) {
-    script += `\n        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  // Add CC recipients
-  for (const recipient of ccRecipients) {
-    script += `\n        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  // Add BCC recipients
-  for (const recipient of bccRecipients) {
-    script += `\n        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  script += `
-        send
-      end tell
-    end tell
-    return "sent"
-  `;
+async function sendEmail({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) {
+  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'send newMessage' })
+    + '\n    return "sent"\n';
 
   await runAppleScript(script);
   return { success: true, message: 'Email sent successfully' };
@@ -123,38 +147,9 @@ async function sendEmail({ to, cc, bcc, subject, body }) {
  * @param {Object} options - Email options
  * @returns {Promise<Object>} - Save result
  */
-async function saveDraft({ to, cc, bcc, subject, body }) {
-  const toRecipients = to ? (Array.isArray(to) ? to : [to]) : [];
-  const ccRecipients = cc ? (Array.isArray(cc) ? cc : [cc]) : [];
-  const bccRecipients = bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : [];
-
-  let script = `
-    tell application "Mail"
-      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject || '')}", content:"${escapeAppleScript(body || '')}", visible:false}
-      tell newMessage
-  `;
-
-  // Add To recipients
-  for (const recipient of toRecipients) {
-    script += `\n        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  // Add CC recipients
-  for (const recipient of ccRecipients) {
-    script += `\n        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  // Add BCC recipients
-  for (const recipient of bccRecipients) {
-    script += `\n        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}`;
-  }
-
-  script += `
-      end tell
-      save newMessage
-    end tell
-    return "saved"
-  `;
+async function saveDraft({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) {
+  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'save newMessage' })
+    + '\n    return "saved"\n';
 
   await runAppleScript(script);
   return { success: true, message: 'Draft saved successfully' };

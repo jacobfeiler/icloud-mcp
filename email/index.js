@@ -95,14 +95,17 @@ ${body}${attachmentInfo}`
  * Handler: Send email
  */
 async function handleSendEmail(args) {
-  if (!args.to) {
-    return formatError(new Error('Recipient (to) is required'));
+  if (!args.to && !args.inReplyTo) {
+    return formatError(new Error('Recipient (to) is required, unless inReplyTo is set'));
   }
-  if (!args.subject) {
-    return formatError(new Error('Subject is required'));
+  if (!args.subject && !args.inReplyTo) {
+    return formatError(new Error('Subject is required, unless inReplyTo is set'));
   }
   if (!args.body) {
     return formatError(new Error('Body is required'));
+  }
+  if (args.inReplyTo && !isLocalMode()) {
+    return formatError(new Error('inReplyTo is only supported in LOCAL mode (Mail.app)'));
   }
 
   const result = await (isLocalMode() ? localClient : smtpClient).sendEmail({
@@ -111,7 +114,9 @@ async function handleSendEmail(args) {
     bcc: args.bcc,
     subject: args.subject,
     body: args.body,
-    isHtml: args.isHtml || false
+    isHtml: args.isHtml || false,
+    inReplyTo: args.inReplyTo,
+    replyToAll: args.replyToAll || false
   });
 
   if (result.success) {
@@ -136,7 +141,9 @@ async function handleSaveDraft(args) {
     cc: args.cc,
     bcc: args.bcc,
     subject: args.subject,
-    body: args.body
+    body: args.body,
+    inReplyTo: args.inReplyTo,
+    replyToAll: args.replyToAll || false
   });
 
   if (result.success) {
@@ -241,14 +248,16 @@ const emailTools = [
   {
     name: 'send-email',
     title: 'Send Email',
-    description: 'Sends an email immediately from the user\'s account to one or more comma-separated recipients, with optional CC, BCC and HTML body. Cloud mode delivers over SMTP and returns the new message ID; local mode sends through Mail.app, which only sends plain text and returns no ID. There is no draft step, so the message goes out as soon as the tool runs.',
+    description: 'Sends an email immediately from the user\'s account to one or more comma-separated recipients, with optional CC, BCC and HTML body. Cloud mode delivers over SMTP and returns the new message ID; local mode sends through Mail.app, which only sends plain text and returns no ID. There is no draft step, so the message goes out as soon as the tool runs. To reply to an existing message with correct threading (In-Reply-To/References headers, quoted body, matching recipient), pass inReplyTo instead of to/subject - LOCAL mode only.',
     inputSchema: {
-      to: z.string().describe('Recipient email address(es), comma-separated'),
+      to: z.string().optional().describe('Recipient email address(es), comma-separated. Required unless inReplyTo is set (a reply\'s recipient comes from the original message).'),
       cc: z.string().optional().describe('CC recipient(s), comma-separated'),
       bcc: z.string().optional().describe('BCC recipient(s), comma-separated'),
-      subject: z.string().describe('Email subject'),
+      subject: z.string().optional().describe('Email subject. Required unless inReplyTo is set (a reply\'s subject is derived automatically and this is ignored).'),
       body: z.string().describe('Email body content'),
-      isHtml: z.boolean().optional().describe('Whether the body is HTML (default: false)')
+      isHtml: z.boolean().optional().describe('Whether the body is HTML (default: false)'),
+      inReplyTo: z.string().optional().describe('UID of the message to reply to (from list-emails/read-email/search-emails). Uses Mail.app\'s native reply, which sets In-Reply-To/References, quotes the original body beneath yours, and fills in the recipient - to and subject are ignored when this is set. LOCAL mode only.'),
+      replyToAll: z.boolean().optional().describe('When inReplyTo is set, also CC every other recipient of the original message, not just the sender. Default: false.')
     },
     annotations: {"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true},
     handler: withErrorHandler(handleSendEmail, 'send-email')
@@ -256,13 +265,15 @@ const emailTools = [
   {
     name: 'save-draft',
     title: 'Save Email Draft',
-    description: 'Saves an email as a draft in Mail.app without sending it. LOCAL mode only - cloud mode has no way to write a draft over IMAP in this server. Same fields as send-email, but nothing is transmitted; the message lands in the Drafts mailbox for later editing/sending from Mail.app.',
+    description: 'Saves an email as a draft in Mail.app without sending it. LOCAL mode only - cloud mode has no way to write a draft over IMAP in this server. Same fields as send-email, but nothing is transmitted; the message lands in the Drafts mailbox for later editing/sending from Mail.app. To draft a reply with correct threading (In-Reply-To/References headers, quoted body, matching recipient), pass inReplyTo instead of to/subject.',
     inputSchema: {
-      to: z.string().optional().describe('Recipient email address(es), comma-separated (optional for a draft)'),
+      to: z.string().optional().describe('Recipient email address(es), comma-separated (optional for a draft; ignored if inReplyTo is set)'),
       cc: z.string().optional().describe('CC recipient(s), comma-separated'),
       bcc: z.string().optional().describe('BCC recipient(s), comma-separated'),
-      subject: z.string().optional().describe('Email subject'),
-      body: z.string().optional().describe('Email body content')
+      subject: z.string().optional().describe('Email subject (ignored if inReplyTo is set - a reply\'s subject is derived automatically)'),
+      body: z.string().optional().describe('Email body content'),
+      inReplyTo: z.string().optional().describe('UID of the message to reply to (from list-emails/read-email/search-emails). Uses Mail.app\'s native reply, which sets In-Reply-To/References, quotes the original body beneath yours, and fills in the recipient - to and subject are ignored when this is set.'),
+      replyToAll: z.boolean().optional().describe('When inReplyTo is set, also CC every other recipient of the original message, not just the sender. Default: false.')
     },
     annotations: {"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false},
     handler: withErrorHandler(handleSaveDraft, 'save-draft')
