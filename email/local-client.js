@@ -127,11 +127,14 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
   let script = '\n    tell application "Mail"\n';
 
   if (inReplyTo) {
+    // Mail.app silently drops `set content to ...` on a reply created
+    // `without opening window` - the compose editor needs a real text view
+    // backing it for edits to stick. Open the window, edit, save/send, then
+    // close it - confirmed against a real draft that visible was required
+    // (invisible produced a message with no content at all, not even the
+    // text this script set).
     script += `      ${findMessageByIdStmts('theMessage', inReplyTo)}\n`;
-    script += `      set newMessage to reply theMessage without opening window${replyToAll ? ' with reply to all' : ''}\n`;
-    // Mail.app fills in a reply's quoted body/subject/recipient asynchronously
-    // after `reply` returns; reading them back immediately can see them still
-    // empty. Give it a moment before touching anything.
+    script += `      set newMessage to reply theMessage with opening window${replyToAll ? ' with reply to all' : ''}\n`;
     script += `      delay 1\n`;
     script += `      tell newMessage\n`;
     script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
@@ -152,6 +155,9 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
     script += `        set resultTo to resultTo & (address of r) & ","\n`;
     script += `      end repeat\n`;
     script += `      set resultContent to content of newMessage\n`;
+    script += `      try\n`;
+    script += `        close newMessage\n`;
+    script += `      end try\n`;
     script += '    end tell\n';
     script += '    return resultSubject & "|||" & resultTo & "|||" & resultContent\n';
     return script;
