@@ -120,6 +120,13 @@ async function handleSendEmail(args) {
   });
 
   if (result.success) {
+    if (result.reply) {
+      // inReplyTo path: report what Mail.app actually set, not the (mostly
+      // ignored) args the caller passed in - verifiable instead of assumed.
+      return formatSuccess(
+        `Email sent successfully!\n\nTo: ${result.reply.to || '(unknown)'}\nSubject: ${result.reply.subject || '(unknown)'}\n\nQuoted content preview:\n${result.reply.contentPreview}`
+      );
+    }
     return formatSuccess(
       `Email sent successfully!\n\nTo: ${args.to}${args.cc ? `\nCC: ${args.cc}` : ''}\nSubject: ${args.subject}${result.messageId ? `\nMessage ID: ${result.messageId}` : ''}`
     );
@@ -147,6 +154,13 @@ async function handleSaveDraft(args) {
   });
 
   if (result.success) {
+    if (result.reply) {
+      // inReplyTo path: report what Mail.app actually set, not the (mostly
+      // ignored) args the caller passed in - verifiable instead of assumed.
+      return formatSuccess(
+        `Draft saved successfully!\n\nTo: ${result.reply.to || '(unknown)'}\nSubject: ${result.reply.subject || '(unknown)'}\n\nQuoted content preview:\n${result.reply.contentPreview}`
+      );
+    }
     return formatSuccess(
       `Draft saved successfully!\n\n${args.to ? `To: ${args.to}\n` : ''}${args.cc ? `CC: ${args.cc}\n` : ''}Subject: ${args.subject || '(no subject)'}`
     );

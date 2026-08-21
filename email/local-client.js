@@ -129,6 +129,10 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
   if (inReplyTo) {
     script += `      ${findMessageByIdStmts('theMessage', inReplyTo)}\n`;
     script += `      set newMessage to reply theMessage without opening window${replyToAll ? ' with reply to all' : ''}\n`;
+    // Mail.app fills in a reply's quoted body/subject/recipient asynchronously
+    // after `reply` returns; reading them back immediately can see them still
+    // empty. Give it a moment before touching anything.
+    script += `      delay 1\n`;
     script += `      tell newMessage\n`;
     script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
     for (const recipient of ccRecipients) {
@@ -138,25 +142,53 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
       script += `        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
     }
     script += `      end tell\n`;
-  } else {
-    const toRecipients = to ? (Array.isArray(to) ? to : [to]) : [];
-    script += `      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject || '')}", content:"${escapeAppleScript(body || '')}", visible:false}\n`;
-    script += `      tell newMessage\n`;
-    for (const recipient of toRecipients) {
-      script += `        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
-    }
-    for (const recipient of ccRecipients) {
-      script += `        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
-    }
-    for (const recipient of bccRecipients) {
-      script += `        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
-    }
-    script += `      end tell\n`;
+    script += `      ${finalCommand}\n`;
+    // Read back what Mail.app actually set, rather than trusting args the
+    // caller passed in (which are ignored on this path) - callers can then
+    // report what really landed instead of echoing input back as if verified.
+    script += `      set resultSubject to subject of newMessage\n`;
+    script += `      set resultTo to ""\n`;
+    script += `      repeat with r in (to recipients of newMessage)\n`;
+    script += `        set resultTo to resultTo & (address of r) & ","\n`;
+    script += `      end repeat\n`;
+    script += `      set resultContent to content of newMessage\n`;
+    script += '    end tell\n';
+    script += '    return resultSubject & "|||" & resultTo & "|||" & resultContent\n';
+    return script;
   }
 
+  const toRecipients = to ? (Array.isArray(to) ? to : [to]) : [];
+  script += `      set newMessage to make new outgoing message with properties {subject:"${escapeAppleScript(subject || '')}", content:"${escapeAppleScript(body || '')}", visible:false}\n`;
+  script += `      tell newMessage\n`;
+  for (const recipient of toRecipients) {
+    script += `        make new to recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+  }
+  for (const recipient of ccRecipients) {
+    script += `        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+  }
+  for (const recipient of bccRecipients) {
+    script += `        make new bcc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
+  }
+  script += `      end tell\n`;
   script += `      ${finalCommand}\n`;
   script += '    end tell\n';
+  script += `    return "${finalCommand.startsWith('send') ? 'sent' : 'saved'}"\n`;
   return script;
+}
+
+/**
+ * Parse the "subject|||to|||content" return value the inReplyTo path
+ * produces into a plain object, or null for the non-reply path (nothing to
+ * parse - caller already knows what it sent).
+ */
+function parseReplyResult(raw) {
+  if (typeof raw !== 'string' || !raw.includes('|||')) return null;
+  const [subject, toRaw, content] = raw.split('|||');
+  return {
+    subject,
+    to: toRaw.replace(/,$/, ''),
+    contentPreview: (content || '').slice(0, 200)
+  };
 }
 
 /**
@@ -165,11 +197,10 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
  * @returns {Promise<Object>} - Send result
  */
 async function sendEmail({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) {
-  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'send newMessage' })
-    + '\n    return "sent"\n';
-
-  await runAppleScript(script);
-  return { success: true, message: 'Email sent successfully' };
+  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'send newMessage' });
+  const raw = await runAppleScript(script);
+  const reply = parseReplyResult(raw);
+  return { success: true, message: 'Email sent successfully', reply };
 }
 
 /**
@@ -178,11 +209,10 @@ async function sendEmail({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) 
  * @returns {Promise<Object>} - Save result
  */
 async function saveDraft({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) {
-  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'save newMessage' })
-    + '\n    return "saved"\n';
-
-  await runAppleScript(script);
-  return { success: true, message: 'Draft saved successfully' };
+  const script = buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll, finalCommand: 'save newMessage' });
+  const raw = await runAppleScript(script);
+  const reply = parseReplyResult(raw);
+  return { success: true, message: 'Draft saved successfully', reply };
 }
 
 /**
