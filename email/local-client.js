@@ -135,7 +135,26 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
     // text this script set).
     script += `      ${findMessageByIdStmts('theMessage', inReplyTo)}\n`;
     script += `      set newMessage to reply theMessage with opening window${replyToAll ? ' with reply to all' : ''}\n`;
-    script += `      delay 1\n`;
+    // Mail.app fills in the quoted body asynchronously even with the window
+    // open; editing content before that finishes gets silently clobbered
+    // when Mail's own population completes a moment later and overwrites
+    // the whole field. Poll until content stops changing (i.e. Mail is
+    // actually done) instead of guessing a fixed delay - confirmed against
+    // a real draft that a blind 1s delay was too short for a longer quoted
+    // chain and lost the prepended text entirely.
+    script += `      set prevContent to "___unset___"\n`;
+    script += `      set stableCount to 0\n`;
+    script += `      repeat 20 times\n`;
+    script += `        delay 0.5\n`;
+    script += `        set curContent to (content of newMessage)\n`;
+    script += `        if curContent is prevContent and curContent is not "" then\n`;
+    script += `          set stableCount to stableCount + 1\n`;
+    script += `          if stableCount > 2 then exit repeat\n`;
+    script += `        else\n`;
+    script += `          set stableCount to 0\n`;
+    script += `        end if\n`;
+    script += `        set prevContent to curContent\n`;
+    script += `      end repeat\n`;
     script += `      tell newMessage\n`;
     script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
     for (const recipient of ccRecipients) {
