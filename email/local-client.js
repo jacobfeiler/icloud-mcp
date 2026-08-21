@@ -77,6 +77,36 @@ async function readEmail(emailId) {
 }
 
 /**
+ * AppleScript statements that search every mailbox of every account for a
+ * message by numeric id and leave it in `resultVar`.
+ *
+ * Mail.app's bare `message id <n>` reference form does not compile on
+ * current macOS/Mail.app - the dictionary requires an enclosing mailbox and
+ * account (`message id <n> of mailbox <m> of account <a>`), which callers
+ * here never have (a UID from list-emails/read-email doesn't carry that).
+ * This searches for it instead. Must be run inside `tell application "Mail"`.
+ * @param {string} resultVar - Variable name to assign the found message to
+ * @param {string|number} id - Message id to search for
+ * @returns {string} - AppleScript statements
+ */
+function findMessageByIdStmts(resultVar, id) {
+  const n = asInt(id);
+  return [
+    `set ${resultVar} to missing value`,
+    `repeat with acct in accounts`,
+    `  repeat with mb in mailboxes of acct`,
+    `    try`,
+    `      set ${resultVar} to (first message of mb whose id is ${n})`,
+    `      exit repeat`,
+    `    end try`,
+    `  end repeat`,
+    `  if ${resultVar} is not missing value then exit repeat`,
+    `end repeat`,
+    `if ${resultVar} is missing value then error "Message not found: ${n}"`
+  ].join('\n      ');
+}
+
+/**
  * Build the AppleScript that produces `newMessage` and then runs finalCommand
  * against it. Two shapes:
  *
@@ -97,7 +127,7 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
   let script = '\n    tell application "Mail"\n';
 
   if (inReplyTo) {
-    script += `      set theMessage to message id ${asInt(inReplyTo)}\n`;
+    script += `      ${findMessageByIdStmts('theMessage', inReplyTo)}\n`;
     script += `      set newMessage to reply theMessage without opening window${replyToAll ? ' with reply to all' : ''}\n`;
     script += `      tell newMessage\n`;
     script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
@@ -212,7 +242,7 @@ async function searchEmails({ query, from, subject, folder = 'inbox', count = 25
 async function markAsRead(emailId, isRead = true) {
   const script = `
     tell application "Mail"
-      set theMessage to message id ${asInt(emailId)}
+      ${findMessageByIdStmts('theMessage', emailId)}
       set read status of theMessage to ${asBool(isRead, true)}
     end tell
     return "done"
@@ -258,7 +288,7 @@ async function listFolders() {
 async function deleteEmail(emailId) {
   const script = `
     tell application "Mail"
-      set theMessage to message id ${asInt(emailId)}
+      ${findMessageByIdStmts('theMessage', emailId)}
       delete theMessage
     end tell
     return "deleted"
