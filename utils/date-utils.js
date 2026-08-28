@@ -5,10 +5,14 @@
 const config = require('../config');
 
 /**
- * Format date for display (Spanish locale by default)
+ * Format date for display, in the configured locale + timezone.
  */
 function formatDate(date, options = {}) {
   const d = date instanceof Date ? date : new Date(date);
+
+  // Some callers pass a locale-formatted string (Mail.app's date) that Date
+  // can't parse - show it verbatim rather than "Invalid Date".
+  if (isNaN(d.getTime())) return String(date);
 
   const defaultOptions = {
     year: 'numeric',
@@ -56,9 +60,10 @@ function formatRelative(date) {
   const now = new Date();
   const diff = Math.floor((now - d) / (1000 * 60 * 60 * 24));
 
-  if (diff === 0) return 'Hoy';
-  if (diff === 1) return 'Ayer';
-  if (diff < 7) return `Hace ${diff} días`;
+  if (isNaN(d.getTime())) return String(date);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7) return `${diff} days ago`;
 
   return formatDate(d, { hour: undefined, minute: undefined });
 }

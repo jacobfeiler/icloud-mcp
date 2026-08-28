@@ -48,13 +48,15 @@ module.exports = {
     AUTH_METHOD: 'Basic'
   },
 
-  // Default settings
+  // Default settings. TIMEZONE / DATE_FORMAT only affect how dates are
+  // rendered in tool *text* output - structured Date values are always
+  // exact. Override with env ICLOUD_MCP_TIMEZONE / ICLOUD_MCP_LOCALE.
   DEFAULTS: {
-    TIMEZONE: 'Europe/Madrid',
+    TIMEZONE: process.env.ICLOUD_MCP_TIMEZONE || 'America/Mexico_City',
     PAGE_SIZE: 25,
     MAX_RESULTS: 50,
     EMAIL_BODY_MAX_LENGTH: 50000,
-    DATE_FORMAT: 'es-ES'
+    DATE_FORMAT: process.env.ICLOUD_MCP_LOCALE || 'en-AU'
   },
 
   // Email folder mappings

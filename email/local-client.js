@@ -51,29 +51,67 @@ async function listEmails(folder = 'inbox', count = 25) {
 }
 
 /**
- * Read a specific email
- * @param {string} emailId - Email ID
- * @returns {Promise<Object>} - Email content
+ * Read a specific email by its Mail.app id.
+ *
+ * JXA's `mail.messages.byId(n)` throws `Can't get object` on current macOS,
+ * so this searches every mailbox for the id the same way the reply/mark/
+ * delete paths do, and returns the fields via a delimiter-joined string
+ * (JSON-building in AppleScript is fragile with recipient lists).
  */
 async function readEmail(emailId) {
+  const DELIM = '-=|=-';
   const script = `
-    const mail = Application('Mail');
-    const msg = mail.messages.byId(${asInt(emailId)});
-
-    JSON.stringify({
-      id: msg.id(),
-      subject: msg.subject(),
-      from: msg.sender(),
-      to: msg.toRecipients().map(r => r.address()),
-      cc: msg.ccRecipients().map(r => r.address()),
-      date: msg.dateReceived().toISOString(),
-      body: msg.content(),
-      read: msg.readStatus()
-    });
+    tell application "Mail"
+      ${findMessageByIdStmts('theMessage', emailId)}
+      set theSubject to ""
+      try
+        set theSubject to subject of theMessage
+      end try
+      set theSender to ""
+      try
+        set theSender to sender of theMessage
+      end try
+      set toList to ""
+      try
+        repeat with r in to recipients of theMessage
+          set toList to toList & (address of r) & ", "
+        end repeat
+      end try
+      set ccList to ""
+      try
+        repeat with r in cc recipients of theMessage
+          set ccList to ccList & (address of r) & ", "
+        end repeat
+      end try
+      set theDate to ""
+      try
+        set theDate to (date received of theMessage) as string
+      end try
+      set isRead to false
+      try
+        set isRead to read status of theMessage
+      end try
+      set theBody to ""
+      try
+        set theBody to content of theMessage
+      end try
+      return theSubject & "${DELIM}" & theSender & "${DELIM}" & toList & "${DELIM}" & ccList & "${DELIM}" & theDate & "${DELIM}" & (isRead as string) & "${DELIM}" & theBody
+    end tell
   `;
 
-  const result = await runJXA(script);
-  return result ? JSON.parse(result) : null;
+  const raw = await runAppleScript(script);
+  const [subject, from, toRaw, ccRaw, date, read, body] = splitFields(raw, DELIM, 7);
+  const addrs = s => (s || '').split(',').map(x => x.trim()).filter(Boolean);
+  return {
+    id: emailId,
+    subject: (subject || '').trim(),
+    from: (from || '').trim(),
+    to: addrs(toRaw),
+    cc: addrs(ccRaw),
+    date: (date || '').trim(),
+    body: body || '',
+    read: String(read).trim() === 'true'
+  };
 }
 
 /**
