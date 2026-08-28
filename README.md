@@ -24,7 +24,7 @@ icloud-mcp covers seven Apple services with two interchangeable backends, and as
 
 ## Features
 
-The server exposes 41 tools across Email, Calendar, Contacts, Reminders, Notes, Messages and Safari. Each tool carries a typed schema, a human title and behavioural annotations, and every `list-*` tool returns machine-readable `structuredContent` alongside its text output. Local mode needs no passwords at all; macOS Automation permissions take their place.
+The server exposes 42 tools across Email, Calendar, Contacts, Reminders, Notes, Messages and Safari. Each tool carries a typed schema, a human title and behavioural annotations, and every `list-*` tool returns machine-readable `structuredContent` alongside its text output. Local mode needs no passwords at all; macOS Automation permissions take their place.
 
 ## Access and security model
 

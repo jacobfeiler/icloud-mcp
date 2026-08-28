@@ -6,8 +6,8 @@ This MCP server provides Claude with access to Apple services via two modes:
 
 | Mode | Description | Services | Requirements |
 |------|-------------|----------|--------------|
-| **LOCAL** (default) | AppleScript access to macOS apps | 7 services, 41 tools | macOS |
-| **CLOUD** | iCloud protocols (IMAP, CalDAV, CardDAV) | 3 services, 41 tools* | App-specific password |
+| **LOCAL** (default) | AppleScript access to macOS apps | 7 services, 42 tools | macOS |
+| **CLOUD** | iCloud protocols (IMAP, CalDAV, CardDAV) | 3 services, 42 tools* | App-specific password |
 
 \* In CLOUD mode, local-only tools (Reminders, Notes, Messages, Safari) return an error when called.
 
@@ -23,7 +23,7 @@ Use `set-mode` to switch between modes **without restarting**:
 
 | Service | Protocol | Tools |
 |---------|----------|-------|
-| **Email** | Mail.app (AppleScript) | 6 |
+| **Email** | Mail.app (AppleScript); `save-draft` via IMAP | 7 |
 | **Calendar** | Calendar.app (AppleScript) | 5 |
 | **Contacts** | Contacts.app (AppleScript) | 7 |
 | **Reminders** | Reminders.app (AppleScript) | 7 |
@@ -125,20 +125,35 @@ icloud-mcp/
     └── error-handler.js
 ```
 
-## Tools (41 total)
+## Tools (42 total)
 
 ### Auth (3)
 - `about` - Server information
 - `check-auth-status` - Verify credentials
 - `set-mode` - Switch between LOCAL and CLOUD modes at runtime
 
-### Email (6)
+### Email (7)
 - `list-emails` - List emails from folder
 - `read-email` - Read email content
 - `send-email` - Send email
+- `save-draft` - Save a draft (does not send) — see below
 - `search-emails` - Search by criteria
 - `mark-as-read` - Mark read/unread
 - `list-folders` - List mail folders
+
+**`save-draft`** builds the message with nodemailer's MailComposer
+(`multipart/alternative`: plain text + HTML with real `<br>` breaks) and
+`APPEND`s it to the iCloud **Drafts** mailbox with the `\Draft` flag, in
+both LOCAL and CLOUD mode — so it needs `ICLOUD_EMAIL` / `ICLOUD_APP_PASSWORD`
+regardless of mode. This exists because AppleScript compose on current
+macOS produces drafts other clients can't read (empty `text/plain`, body
+trapped in a share-wrapper `<blockquote>`). `inReplyTo` (a message handle
+from `list-emails`/`search-emails`) reads the original for its
+Message-ID + References → `In-Reply-To`/`References`, derives the `Re:`
+subject and recipient, and quotes the original body beneath the reply. A
+`from` option drafts from an alias. No signature is inserted. `send-email`
+with `inReplyTo` still uses AppleScript compose and has the render problem —
+prefer `save-draft` + send from the mail client for threaded replies.
 
 ### Calendar (5)
 - `list-events` - List upcoming events
