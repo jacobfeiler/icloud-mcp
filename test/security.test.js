@@ -162,7 +162,10 @@ console.log('\nDual-mode routing (email + calendar)');
   }
 
   const mode = require(path.join(ROOT, 'mode'));
+  const cfg = require(path.join(ROOT, 'config'));
   const originalMode = mode.getMode();
+  const savedEmail = cfg.ICLOUD_EMAIL;
+  const savedPw = cfg.ICLOUD_APP_PASSWORD;
   const { emailTools } = require(path.join(ROOT, 'email'));
   const { calendarTools } = require(path.join(ROOT, 'calendar'));
   const byName = n => [...emailTools, ...calendarTools].find(t => t.name === n);
@@ -176,26 +179,45 @@ console.log('\nDual-mode routing (email + calendar)');
     return calls.join(',');
   };
 
-  let localCalls, cloudCalls;
+  let noCredLocal, credLocal, credCloud;
   const done = (async () => {
+    // No credentials: every service follows the server mode.
+    cfg.ICLOUD_EMAIL = undefined;
+    cfg.ICLOUD_APP_PASSWORD = undefined;
     mode.setMode('local');
-    localCalls = await exercise();
+    noCredLocal = await exercise();
+
+    // Credentials present: calendar always goes over CalDAV (Calendar.app
+    // automation hangs on real machines), even while the server is LOCAL and
+    // email still routes local.
+    cfg.ICLOUD_EMAIL = 'stub@icloud.com';
+    cfg.ICLOUD_APP_PASSWORD = 'stub-pw';
+    mode.setMode('local');
+    credLocal = await exercise();
     mode.setMode('cloud');
-    cloudCalls = await exercise();
+    credCloud = await exercise();
+
+    cfg.ICLOUD_EMAIL = savedEmail;
+    cfg.ICLOUD_APP_PASSWORD = savedPw;
     mode.setMode(originalMode);
   })();
 
   done.then(() => {
-    check('LOCAL mode reaches the AppleScript clients', () => {
-      assert(/email-LOCAL\.listEmails/.test(localCalls), 'email not routed local: ' + localCalls);
-      assert(/cal-LOCAL\.listEvents/.test(localCalls), 'calendar not routed local: ' + localCalls);
+    check('no credentials + LOCAL mode reaches the AppleScript clients', () => {
+      assert(/email-LOCAL\.listEmails/.test(noCredLocal), 'email not routed local: ' + noCredLocal);
+      assert(/cal-LOCAL\.listEvents/.test(noCredLocal), 'calendar not routed local: ' + noCredLocal);
+    });
+    check('credentials present: calendar uses CalDAV even in LOCAL mode', () => {
+      assert(/email-LOCAL\.listEmails/.test(credLocal), 'email should still follow mode: ' + credLocal);
+      assert(/cal-CLOUD\./.test(credLocal), 'calendar should use CalDAV: ' + credLocal);
+      assert(!/cal-LOCAL\./.test(credLocal), 'Calendar.app reached despite credentials: ' + credLocal);
     });
     check('CLOUD mode reaches the IMAP/CalDAV clients', () => {
-      assert(/email-CLOUD\.listEmails/.test(cloudCalls), 'email not routed cloud: ' + cloudCalls);
-      assert(/cal-CLOUD\.getCalendars/.test(cloudCalls), 'calendar not routed cloud: ' + cloudCalls);
+      assert(/email-CLOUD\.listEmails/.test(credCloud), 'email not routed cloud: ' + credCloud);
+      assert(/cal-CLOUD\.getCalendars/.test(credCloud), 'calendar not routed cloud: ' + credCloud);
     });
     check('no local client is reached in cloud mode', () => {
-      assert(!/-LOCAL\./.test(cloudCalls), 'local client leaked into cloud mode: ' + cloudCalls);
+      assert(!/-LOCAL\./.test(credCloud), 'local client leaked into cloud mode: ' + credCloud);
     });
     Module.prototype.require = realRequire;
     for (const k of Object.keys(require.cache)) {

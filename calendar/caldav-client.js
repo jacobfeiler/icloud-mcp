@@ -97,41 +97,109 @@ function parseEvent(icalData, url) {
 }
 
 /**
- * List events from all calendars
+ * Expand one VCALENDAR object into the actual event occurrences that fall
+ * inside [windowStart, windowEnd].
+ *
+ * A CalDAV time-range REPORT returns the *master* VEVENT for a recurring
+ * series (DTSTART = the original, possibly years ago) plus any override
+ * VEVENTs. Reading `startDate` off the master shows the wrong date and lets
+ * long-past series leak in, so recurring masters are stepped with ical.js's
+ * iterator and only in-window instances are emitted. Non-recurring events
+ * are range-checked directly.
+ *
+ * @returns {Array<{uid,summary,description,location,start:Date,end:Date,isAllDay,status}>}
+ */
+function expandOccurrences(icalData, windowStart, windowEnd) {
+  const MAX_ITER = 3000;
+  try {
+    const comp = new ICAL.Component(ICAL.parse(icalData));
+    const vevents = comp.getAllSubcomponents('vevent');
+    if (!vevents.length) return [];
+
+    const master = vevents.find(v => !v.hasProperty('recurrence-id')) || vevents[0];
+    const event = new ICAL.Event(master);
+    for (const v of vevents) {
+      if (v.hasProperty('recurrence-id')) {
+        try { event.relateException(new ICAL.Event(v)); } catch (_) { /* ignore */ }
+      }
+    }
+
+    const base = {
+      uid: event.uid,
+      summary: event.summary || '(No title)',
+      description: event.description || '',
+      location: event.location || '',
+      isAllDay: event.startDate ? event.startDate.isDate : false,
+      status: event.status
+    };
+
+    if (!event.isRecurring || !event.isRecurring()) {
+      const start = event.startDate ? event.startDate.toJSDate() : null;
+      const end = event.endDate ? event.endDate.toJSDate() : start;
+      if (!start) return [];
+      if (end < windowStart || start > windowEnd) return [];
+      return [{ ...base, start, end }];
+    }
+
+    const out = [];
+    const iter = event.iterator();
+    let next;
+    let i = 0;
+    while ((next = iter.next()) && i++ < MAX_ITER) {
+      const startJs = next.toJSDate();
+      if (startJs > windowEnd) break;
+      if (startJs < windowStart) continue;
+      let d = null;
+      try { d = event.getOccurrenceDetails(next); } catch (_) { /* use raw */ }
+      out.push({
+        ...base,
+        summary: (d && d.item && d.item.summary) || base.summary,
+        start: d ? d.startDate.toJSDate() : startJs,
+        end: d ? d.endDate.toJSDate() : startJs
+      });
+      if (out.length >= 100) break;
+    }
+    return out;
+  } catch (error) {
+    console.error('expandOccurrences error:', error.message);
+    return [];
+  }
+}
+
+/**
+ * List events from all calendars, recurring series expanded to the
+ * occurrences inside the look-ahead window.
  */
 async function listEvents(count = 25, daysAhead = 30) {
   const client = await getClient();
   const calendars = await client.fetchCalendars();
 
   const now = new Date();
-  const endDate = new Date();
-  endDate.setDate(endDate.getDate() + daysAhead);
+  const endDate = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
 
   const allEvents = [];
 
   for (const calendar of calendars) {
+    let calendarObjects;
     try {
-      const calendarObjects = await client.fetchCalendarObjects({
+      calendarObjects = await client.fetchCalendarObjects({
         calendar,
-        timeRange: {
-          start: now.toISOString(),
-          end: endDate.toISOString()
-        }
+        timeRange: { start: now.toISOString(), end: endDate.toISOString() }
       });
-
-      for (const obj of calendarObjects) {
-        const event = parseEvent(obj.data, obj.url);
-        if (event) {
-          event.calendarName = calendar.displayName || 'Calendar';
-          allEvents.push(event);
-        }
-      }
     } catch (error) {
       console.error(`Error fetching from calendar ${calendar.displayName}:`, error.message);
+      continue;
+    }
+
+    for (const obj of calendarObjects) {
+      for (const occ of expandOccurrences(obj.data, now, endDate)) {
+        occ.url = obj.url;
+        occ.calendarName = calendar.displayName || 'Calendar';
+        allEvents.push(occ);
+      }
     }
   }
 
-  // Sort by start date
   allEvents.sort((a, b) => (a.start || 0) - (b.start || 0));
 
   return allEvents.slice(0, count);
@@ -316,5 +384,6 @@ module.exports = {
   updateEvent,
   deleteEvent,
   parseEvent,
+  expandOccurrences,
   applyICalChanges
 };

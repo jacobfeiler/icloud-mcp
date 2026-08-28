@@ -6,11 +6,29 @@
 const { z } = require('zod');
 const cloudClient = require('./caldav-client');
 const localClient = require('./local-client');
-const { isLocalMode } = require('../mode');
+const { hasCredentials } = require('../auth');
 const { formatSuccess, formatError, withErrorHandler } = require('../utils/error-handler');
 const { listOutput, listResult } = require('../utils/schemas');
 const { formatDate } = require('../utils/date-utils');
 const config = require('../config');
+
+/**
+ * Pick the calendar backend.
+ *
+ * Calendar.app automation hangs on some macOS installs - a busy set of
+ * subscribed iCloud calendars never finishes loading, and even a bare
+ * `count of events` never returns. So, exactly like `save-draft` forcing
+ * IMAP regardless of mode, calendar work goes over **CalDAV whenever
+ * credentials are configured**, in either LOCAL or CLOUD mode. Calendar.app
+ * is used only as the no-credentials fallback.
+ *
+ * `local` in the return means "the AppleScript client is in use" - the
+ * normalize/label code keys off it, not off the server mode.
+ */
+function calendarClient() {
+  if (hasCredentials()) return { client: cloudClient, local: false };
+  return { client: localClient, local: true };
+}
 
 /**
  * Normalize an event to one shape regardless of mode.
@@ -50,8 +68,7 @@ async function handleListEvents(args) {
   const count = Math.min(args.count || 25, config.DEFAULTS.MAX_RESULTS);
   const daysAhead = args.daysAhead || 30;
 
-  const local = isLocalMode();
-  const client = local ? localClient : cloudClient;
+  const { client, local } = calendarClient();
 
   const raw = await client.listEvents(count, daysAhead);
   const events = raw.map(e => normalizeEvent(e, local));
@@ -90,8 +107,7 @@ async function handleCreateEvent(args) {
     return formatError(new Error('End date/time is required (ISO 8601 format)'));
   }
 
-  const local = isLocalMode();
-  const client = local ? localClient : cloudClient;
+  const { client, local } = calendarClient();
 
   const result = await client.createEvent({
     summary: args.summary,
@@ -131,8 +147,7 @@ async function handleUpdateEvent(args) {
     }
   }
 
-  const local = isLocalMode();
-  const client = local ? localClient : cloudClient;
+  const { client } = calendarClient();
 
   await client.updateEvent(args.eventUrl, changes);
 
@@ -151,7 +166,7 @@ async function handleDeleteEvent(args) {
     return formatError(new Error('Event URL is required'));
   }
 
-  const client = isLocalMode() ? localClient : cloudClient;
+  const { client } = calendarClient();
   await client.deleteEvent(args.eventUrl);
 
   return formatSuccess(`Event deleted successfully.`);
@@ -161,8 +176,8 @@ async function handleDeleteEvent(args) {
  * Handler: List calendars
  */
 async function handleListCalendars() {
-  const local = isLocalMode();
-  const raw = local ? await localClient.listCalendars() : await cloudClient.getCalendars();
+  const { client, local } = calendarClient();
+  const raw = local ? await client.listCalendars() : await client.getCalendars();
   const calendars = raw.map(c => normalizeCalendar(c, local));
 
   if (calendars.length === 0) {
@@ -182,7 +197,7 @@ const calendarTools = [
     name: 'list-events',
     outputSchema: listOutput('Calendar events'),
     title: 'List Events',
-    description: 'Lists upcoming calendar events within a look-ahead window (30 days by default, up to 365). Each event carries its title, start and end times, and the ref handle that update-event and delete-event take as their eventUrl argument.',
+    description: 'Lists upcoming calendar events within a look-ahead window (30 days by default, up to 365). Recurring events are expanded to their actual occurrences inside the window. Each event carries its title, start and end times, and the ref handle that update-event and delete-event take as their eventUrl argument.',
     inputSchema: {
       count: z.number().int().min(1).max(50).optional().describe('Number of events to retrieve (default: 25, max: 50)'),
       daysAhead: z.number().int().min(1).max(365).optional().describe('Number of days to look ahead (default: 30)')
@@ -209,7 +224,7 @@ const calendarTools = [
   {
     name: 'update-event',
     title: 'Update Event',
-    description: 'Updates an existing calendar event. Only the fields you pass are changed. In cloud mode the CalDAV property-merge preserves recurrence, invitees and alarms (experimental: the live round-trip is not yet verified).',
+    description: 'Updates an existing calendar event. Only the fields you pass are changed. Over CalDAV (the default whenever credentials are set) the property-merge preserves recurrence, invitees and alarms - it rewrites individual VEVENT lines rather than rebuilding the object.',
     inputSchema: {
       eventUrl: z.string().describe('Event handle from list-events: the URL in cloud mode, the UID in local mode'),
       summary: z.string().optional().describe('New event title (optional)'),

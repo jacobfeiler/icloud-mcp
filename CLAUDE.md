@@ -24,15 +24,20 @@ Use `set-mode` to switch between modes **without restarting**:
 | Service | Protocol | Tools |
 |---------|----------|-------|
 | **Email** | Mail.app (AppleScript); `save-draft` via IMAP | 7 |
-| **Calendar** | Calendar.app (AppleScript) | 5 |
+| **Calendar** | CalDAV when credentials are set, else Calendar.app (AppleScript) | 5 |
 | **Contacts** | Contacts.app (AppleScript) | 7 |
 | **Reminders** | Reminders.app (AppleScript) | 7 |
 | **Notes** | Notes.app (AppleScript) | 5 |
 | **Messages** | Messages.app + `imsg` CLI | 4 |
 | **Safari** | Safari.app (AppleScript) | 4 |
 
-All seven services now honour the mode. Email and Calendar route through
-`local-client.js` in LOCAL mode and IMAP/SMTP/CalDAV in CLOUD mode.
+All seven services honour the mode, with two deliberate exceptions that go
+over the network **whenever credentials are configured, in either mode**,
+because their AppleScript path is unreliable on real machines:
+`save-draft` always uses IMAP APPEND, and **all calendar tools use CalDAV**
+(Calendar.app automation hangs on installs with many subscribed iCloud
+calendars). Calendar falls back to Calendar.app only when there are no
+credentials.
 
 **Field differences between modes** (normalized where possible):
 
@@ -50,10 +55,11 @@ so a tool returns the same field names in both modes. The two genuinely
 unavailable values are the SMTP message ID and `isHtml` (Mail.app sends plain
 text), which are simply omitted in LOCAL mode.
 
-> **`update-event` in CLOUD mode is experimental.** The CalDAV update path is
-> new. Its property-merge preserves RRULE, ATTENDEE and VALARM (unit-tested),
-> but the live round-trip against iCloud has not been verified — test on a
-> disposable calendar first. LOCAL mode uses Calendar.app and is unaffected.
+> **Calendar over CalDAV.** `list-events` expands recurring series to the
+> occurrences inside the look-ahead window (the CalDAV REPORT returns only
+> the master VEVENT). `update-event` rewrites individual VEVENT lines, so
+> RRULE / ATTENDEE / VALARM survive an edit (unit-tested; live
+> create→update→delete round-trip verified against iCloud 2026-08-27).
 
 ### Cloud Mode
 
