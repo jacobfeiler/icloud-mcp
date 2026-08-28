@@ -210,7 +210,7 @@ async function handleSaveDraft(args) {
 
   let result;
   try {
-    result = await cloudClient.saveDraft({ to, cc, bcc, subject, text, html, inReplyTo: inReplyToId, references });
+    result = await cloudClient.saveDraft({ from: args.from, to, cc, bcc, subject, text, html, inReplyTo: inReplyToId, references });
   } catch (e) {
     if (e.message === 'UNAUTHORIZED') {
       return formatError(new Error('iCloud rejected the credentials - check ICLOUD_EMAIL / ICLOUD_APP_PASSWORD.'));
@@ -221,7 +221,7 @@ async function handleSaveDraft(args) {
   const preview = text.length > 500 ? `${text.slice(0, 500)}\n... (truncated)` : text;
   return formatSuccess(
     `Draft saved to "${result.mailbox}" via IMAP (${result.bytes} bytes).\n\n` +
-    `${to ? `To: ${to}\n` : ''}${cc ? `CC: ${cc}\n` : ''}Subject: ${subject || '(no subject)'}\n` +
+    `${args.from ? `From: ${args.from}\n` : ''}${to ? `To: ${to}\n` : ''}${cc ? `CC: ${cc}\n` : ''}Subject: ${subject || '(no subject)'}\n` +
     `${inReplyToId ? `In-Reply-To: ${inReplyToId}\n` : ''}` +
     `\n--- body ---\n${preview}`
   );
@@ -337,13 +337,14 @@ const emailTools = [
   {
     name: 'save-draft',
     title: 'Save Email Draft',
-    description: 'Saves an email as a draft without sending it. Builds the message and writes it straight to your iCloud Drafts mailbox via IMAP APPEND, so it renders and threads correctly in every mail client (Mail, Spark, webmail). Requires credentials (ICLOUD_EMAIL / ICLOUD_APP_PASSWORD) whatever mode the server is in. To draft a reply with correct threading, pass inReplyTo: the original message\'s Message-ID and References chain become In-Reply-To/References, the subject becomes "Re: ...", the recipient is taken from the original sender, and the original body is quoted beneath yours. Plain text only.',
+    description: 'Saves an email as a draft without sending it. Builds the message (plain-text + HTML alternative) and writes it straight to your iCloud Drafts mailbox via IMAP APPEND, so it renders and threads correctly in every mail client (Mail, Spark, webmail). Requires credentials (ICLOUD_EMAIL / ICLOUD_APP_PASSWORD) whatever mode the server is in. To draft a reply with correct threading, pass inReplyTo: the original message\'s Message-ID and References chain become In-Reply-To/References, the subject becomes "Re: ...", the recipient is taken from the original sender, and the original body is quoted beneath yours. Does NOT insert a signature. Give body as plain text (line breaks are preserved).',
     inputSchema: {
+      from: z.string().optional().describe('From address. Defaults to ICLOUD_EMAIL; set this to send the draft from one of your iCloud aliases instead (drafts are not From-validated, and the alias is honoured when you send from the mail client).'),
       to: z.string().optional().describe('Recipient email address(es), comma-separated. Optional for a plain draft; for a reply it defaults to the original sender.'),
       cc: z.string().optional().describe('CC recipient(s), comma-separated'),
       bcc: z.string().optional().describe('BCC recipient(s), comma-separated'),
       subject: z.string().optional().describe('Email subject. For a reply it is derived ("Re: ...") if omitted.'),
-      body: z.string().optional().describe('Your message text (plain text). For a reply this goes above the quoted original.'),
+      body: z.string().optional().describe('Your message text (plain text; newlines become line breaks). For a reply this goes above the quoted original.'),
       inReplyTo: z.string().optional().describe('Handle of the message to reply to (from list-emails/search-emails: a Mail.app id in local mode, an IMAP UID in cloud mode). Drives the threading headers, subject, recipient and quoted body.'),
       folder: z.string().optional().describe('Folder the inReplyTo message is in (cloud mode only, default: inbox)')
     },
