@@ -418,7 +418,11 @@ async function saveDraft({ from, to, cc, bcc, subject, text, html, inReplyTo, re
   return withImap(async (imap) => {
     const mailbox = await resolveDraftsMailbox(imap);
     return new Promise((resolve, reject) => {
-      imap.append(mime, { mailbox, flags: ['\\Draft'], date: new Date() }, (err) => {
+      // No `date` option: node-imap@0.8.19 gates it behind `util.isDate`,
+      // which Node 23+ removed, so passing it throws "isDate is not a
+      // function". The Date header in the MIME already carries the time;
+      // the IMAP internal-date is optional and the server fills it in.
+      imap.append(mime, { mailbox, flags: ['\\Draft'] }, (err) => {
         if (err) reject(err);
         else resolve({ mailbox, bytes: mime.length });
       });
