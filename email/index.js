@@ -136,6 +136,18 @@ async function handleSendEmail(args) {
   }
 }
 
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Plain text -> HTML fragment, one <br> per newline (line breaks survive). */
+function textToBrHtml(s) {
+  return escapeHtml(s).replace(/\r\n/g, '\n').replace(/\n/g, '<br>\n');
+}
+
 /**
  * Handler: Save draft
  *
@@ -144,9 +156,12 @@ async function handleSendEmail(args) {
  * only route that produces a draft every mail client renders correctly:
  * AppleScript compose on current macOS leaves the text/plain part empty and
  * buries the body in a share-wrapper blockquote (Spark then shows "No
- * Content"). For a reply, the original message is read - locally or over
- * IMAP depending on mode - for its Message-ID / References (threading) and
- * its body (quoted beneath the reply).
+ * Content"). We send multipart/alternative - a plain-text part and an HTML
+ * part - because Spark's composer collapses newlines in a text-only draft
+ * and won't fold a `> ` quote; the HTML part gives it real <br> breaks and
+ * a <blockquote type="cite"> it can collapse. For a reply, the original
+ * message is read (locally or over IMAP) for its Message-ID / References
+ * (threading) and its body (quoted beneath the reply).
  */
 async function handleSaveDraft(args) {
   if (!hasCredentials()) {
@@ -156,9 +171,11 @@ async function handleSaveDraft(args) {
   }
 
   let { to, cc, bcc, subject } = args;
+  const body = args.body || '';
   let inReplyToId = null;
   let references = [];
-  let quoted = '';
+  let quotedText = '';
+  let quotedHtml = '';
 
   if (args.inReplyTo) {
     const orig = isLocalMode()
@@ -173,19 +190,27 @@ async function handleSaveDraft(args) {
       : `Re: ${orig.subject || ''}`.trim();
 
     const attribution = `On ${orig.dateStr || 'an earlier date'}, ${orig.from || 'someone'} wrote:`;
-    const quotedLines = (orig.text || '')
+    const origClean = (orig.text || '')
       .replace(/\r\n/g, '\n')
-      .split('\n')
-      .map(l => `> ${l}`)
-      .join('\n');
-    quoted = `\n\n${attribution}\n\n${quotedLines}`;
+      .replace(/￼/g, '')       // object-replacement chars (inline images/emoji)
+      .replace(/[ \t]+\n/g, '\n')   // trailing whitespace
+      .replace(/\n{3,}/g, '\n\n')   // runs of blank lines
+      .trim();
+    const origLines = origClean.split('\n');
+    quotedText = `\n\n${attribution}\n\n${origLines.map(l => `> ${l}`).join('\n')}`;
+    quotedHtml =
+      `<br><div>${escapeHtml(attribution)}</div>` +
+      `<blockquote type="cite" style="margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex">` +
+      origLines.map(escapeHtml).join('<br>\n') +
+      `</blockquote>`;
   }
 
-  const text = `${args.body || ''}${quoted}`;
+  const text = `${body}${quotedText}`;
+  const html = `<div>${textToBrHtml(body)}</div>${quotedHtml}`;
 
   let result;
   try {
-    result = await cloudClient.saveDraft({ to, cc, bcc, subject, text, inReplyTo: inReplyToId, references });
+    result = await cloudClient.saveDraft({ to, cc, bcc, subject, text, html, inReplyTo: inReplyToId, references });
   } catch (e) {
     if (e.message === 'UNAUTHORIZED') {
       return formatError(new Error('iCloud rejected the credentials - check ICLOUD_EMAIL / ICLOUD_APP_PASSWORD.'));
