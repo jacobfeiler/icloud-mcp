@@ -111,10 +111,11 @@ function findMessageByIdStmts(resultVar, id) {
  * against it. Two shapes:
  *
  * - inReplyTo set: uses Mail's own `reply` command against the referenced
- *   message, so In-Reply-To/References, the "Re:" subject, the quoted body,
- *   and the recipient all come from Mail.app itself the way a real reply
- *   would - `to` and `subject` are ignored, since reply() already derives
- *   them correctly and overriding them would defeat the point.
+ *   message, so In-Reply-To/References, the "Re:" subject and the recipient
+ *   all come from Mail.app itself the way a real reply would - `to` and
+ *   `subject` are ignored, since reply() already derives them correctly and
+ *   overriding them would defeat the point. The quoted original is rebuilt
+ *   here rather than taken from Mail (see the comment in the branch).
  * - inReplyTo unset: builds a blank outgoing message, as before.
  *
  * @param {Object} options
@@ -127,36 +128,38 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
   let script = '\n    tell application "Mail"\n';
 
   if (inReplyTo) {
-    // Mail.app silently drops `set content to ...` on a reply created
-    // `without opening window` - the compose editor needs a real text view
-    // backing it for edits to stick. Open the window, edit, save/send, then
-    // close it - confirmed against a real draft that visible was required
-    // (invisible produced a message with no content at all, not even the
-    // text this script set).
+    // Mail's `reply` command threads the draft correctly (In-Reply-To /
+    // References headers, "Re:" subject, recipient) but on current macOS its
+    // `content` property is inert from AppleScript: reads always return ""
+    // and a write only takes effect when the message is saved, at which
+    // point that single write wins outright - Mail's own asynchronously
+    // inserted quoted original is discarded. So there is no way to *append*
+    // our text to Mail's quote; the moment we touch `content` at all, the
+    // quote is gone. Instead: skip the compose window entirely, rebuild the
+    // quoted original ourselves from the source message, and set the whole
+    // body (our text + our quote) in one write. Confirmed against real
+    // drafts - headers thread correctly in Mail and on the recipient side,
+    // and the body persists.
+    const escBody = escapeAppleScript(body || '');
     script += `      ${findMessageByIdStmts('theMessage', inReplyTo)}\n`;
-    script += `      set newMessage to reply theMessage with opening window${replyToAll ? ' with reply to all' : ''}\n`;
-    // Mail.app fills in the quoted body asynchronously even with the window
-    // open; editing content before that finishes gets silently clobbered
-    // when Mail's own population completes a moment later and overwrites
-    // the whole field. Poll until content stops changing (i.e. Mail is
-    // actually done) instead of guessing a fixed delay - confirmed against
-    // a real draft that a blind 1s delay was too short for a longer quoted
-    // chain and lost the prepended text entirely.
-    script += `      set prevContent to "___unset___"\n`;
-    script += `      set stableCount to 0\n`;
-    script += `      repeat 20 times\n`;
-    script += `        delay 0.5\n`;
-    script += `        set curContent to (content of newMessage)\n`;
-    script += `        if curContent is prevContent and curContent is not "" then\n`;
-    script += `          set stableCount to stableCount + 1\n`;
-    script += `          if stableCount > 2 then exit repeat\n`;
-    script += `        else\n`;
-    script += `          set stableCount to 0\n`;
-    script += `        end if\n`;
-    script += `        set prevContent to curContent\n`;
-    script += `      end repeat\n`;
+    script += `      set replyBody to "${escBody}"\n`;
+    // Rebuild "On <date>, <sender> wrote:" + a >-quoted copy of the
+    // original. Wrapped in try so a message whose content can't be read
+    // (rare, but Mail does throw -1708 on some) still yields a threaded
+    // draft carrying at least our text.
+    script += `      set quotedOriginal to ""\n`;
+    script += `      try\n`;
+    script += `        set origSender to sender of theMessage\n`;
+    script += `        set origWhen to (date received of theMessage) as string\n`;
+    script += `        set origContent to content of theMessage\n`;
+    script += `        set quotedOriginal to (linefeed & linefeed & "On " & origWhen & ", " & origSender & " wrote:" & linefeed & linefeed)\n`;
+    script += `        repeat with ln in (paragraphs of origContent)\n`;
+    script += `          set quotedOriginal to quotedOriginal & "> " & (ln as string) & linefeed\n`;
+    script += `        end repeat\n`;
+    script += `      end try\n`;
+    script += `      set newMessage to reply theMessage without opening window${replyToAll ? ' with reply to all' : ''}\n`;
     script += `      tell newMessage\n`;
-    script += `        set content to "${escapeAppleScript(body || '')}" & return & return & content\n`;
+    script += `        set content to replyBody & quotedOriginal\n`;
     for (const recipient of ccRecipients) {
       script += `        make new cc recipient with properties {address:"${escapeAppleScript(recipient)}"}\n`;
     }
@@ -165,20 +168,16 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
     }
     script += `      end tell\n`;
     script += `      ${finalCommand}\n`;
-    // Read back what Mail.app actually set, rather than trusting args the
-    // caller passed in (which are ignored on this path) - callers can then
-    // report what really landed instead of echoing input back as if verified.
+    // Subject and recipient read back reliably off the outgoing message;
+    // `content` does not (see above), so the caller reports the body it
+    // passed in for the preview instead.
     script += `      set resultSubject to subject of newMessage\n`;
     script += `      set resultTo to ""\n`;
     script += `      repeat with r in (to recipients of newMessage)\n`;
     script += `        set resultTo to resultTo & (address of r) & ","\n`;
     script += `      end repeat\n`;
-    script += `      set resultContent to content of newMessage\n`;
-    script += `      try\n`;
-    script += `        close newMessage\n`;
-    script += `      end try\n`;
     script += '    end tell\n';
-    script += '    return resultSubject & "|||" & resultTo & "|||" & resultContent\n';
+    script += `    return resultSubject & "|||" & resultTo & "|||" & "${escapeAppleScript((body || '').slice(0, 200))}"\n`;
     return script;
   }
 
@@ -202,9 +201,11 @@ function buildComposeScript({ to, cc, bcc, subject, body, inReplyTo, replyToAll,
 }
 
 /**
- * Parse the "subject|||to|||content" return value the inReplyTo path
+ * Parse the "subject|||to|||bodyPreview" return value the inReplyTo path
  * produces into a plain object, or null for the non-reply path (nothing to
- * parse - caller already knows what it sent).
+ * parse - caller already knows what it sent). subject and to are read back
+ * from Mail; bodyPreview is the text we asked Mail to set (its `content`
+ * property can't be read back live on current macOS).
  */
 function parseReplyResult(raw) {
   if (typeof raw !== 'string' || !raw.includes('|||')) return null;
