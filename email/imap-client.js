@@ -4,6 +4,7 @@
 
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
+const MailComposer = require('nodemailer/lib/mail-composer');
 const config = require('../config');
 const { getCredentials } = require('../auth');
 
@@ -43,7 +44,7 @@ function withImap(operation) {
     });
 
     imap.once('error', (err) => {
-      if (err.message?.includes('AUTHENTICATIONFAILED')) {
+      if (/AUTHENTICATIONFAILED|authentication failed|invalid credentials|LOGIN failed/i.test(err.message || '')) {
         reject(new Error('UNAUTHORIZED'));
       } else {
         reject(err);
@@ -155,6 +156,9 @@ async function readEmail(uid, folder = 'inbox') {
         fetch.once('end', async () => {
           try {
             const parsed = await simpleParser(rawEmail);
+            const refs = Array.isArray(parsed.references)
+              ? parsed.references
+              : (parsed.references ? [parsed.references] : []);
             resolve({
               uid,
               from: parsed.from?.text || '',
@@ -162,6 +166,8 @@ async function readEmail(uid, folder = 'inbox') {
               cc: parsed.cc?.text || '',
               subject: parsed.subject || '(No subject)',
               date: parsed.date,
+              messageId: parsed.messageId || '',
+              references: refs,
               text: parsed.text || '',
               html: parsed.html || '',
               attachments: (parsed.attachments || []).map(a => ({
@@ -341,9 +347,90 @@ async function listFolders() {
   });
 }
 
+/**
+ * Pull just the fields needed to draft a threaded reply to `uid`:
+ * the original Message-ID and its References chain (for In-Reply-To /
+ * References), plus sender / subject / date / body for the quote block.
+ */
+async function getMessageForReply(uid, folder = 'inbox') {
+  const m = await readEmail(uid, folder);
+  return {
+    messageId: m.messageId || '',
+    references: m.references || [],
+    from: m.from || '',
+    subject: m.subject || '',
+    dateStr: m.date ? new Date(m.date).toUTCString() : '',
+    text: m.text || ''
+  };
+}
+
+/**
+ * Walk the getBoxes() tree for a mailbox carrying an RFC 6154 special-use
+ * attribute (e.g. "\\Drafts"). Returns the full path or null.
+ */
+function findSpecialUse(boxes, flag, prefix = '') {
+  for (const [name, box] of Object.entries(boxes || {})) {
+    const full = prefix ? `${prefix}${box.delimiter}${name}` : name;
+    const attribs = box.attribs || box.attribute || [];
+    if (attribs.includes(flag) || box.special_use_attrib === flag) return full;
+    if (box.children) {
+      const hit = findSpecialUse(box.children, flag, full);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function resolveDraftsMailbox(imap) {
+  return new Promise((resolve) => {
+    imap.getBoxes((err, boxes) => {
+      if (err || !boxes) return resolve(config.EMAIL_FOLDERS.drafts || 'Drafts');
+      resolve(findSpecialUse(boxes, '\\Drafts') || config.EMAIL_FOLDERS.drafts || 'Drafts');
+    });
+  });
+}
+
+/**
+ * Build a MIME message with nodemailer's MailComposer and APPEND it to the
+ * Drafts mailbox with the \Draft flag - a real IMAP draft that every mail
+ * client (Mail, Spark, webmail) renders correctly, unlike an AppleScript
+ * compose. `inReplyTo` / `references` produce the threading headers.
+ */
+async function saveDraft({ from, to, cc, bcc, subject, text, html, inReplyTo, references }) {
+  const creds = getCredentials();
+
+  const composer = new MailComposer({
+    from: from || creds.email,
+    to: to || undefined,
+    cc: cc || undefined,
+    bcc: bcc || undefined,
+    subject: subject || '',
+    text: text != null ? text : undefined,
+    html: html || undefined,
+    inReplyTo: inReplyTo || undefined,
+    references: (references && references.length) ? references : undefined
+  });
+
+  const mime = await new Promise((resolve, reject) => {
+    composer.compile().build((err, msg) => (err ? reject(err) : resolve(msg)));
+  });
+
+  return withImap(async (imap) => {
+    const mailbox = await resolveDraftsMailbox(imap);
+    return new Promise((resolve, reject) => {
+      imap.append(mime, { mailbox, flags: ['\\Draft'], date: new Date() }, (err) => {
+        if (err) reject(err);
+        else resolve({ mailbox, bytes: mime.length });
+      });
+    });
+  });
+}
+
 module.exports = {
   listEmails,
   readEmail,
+  getMessageForReply,
+  saveDraft,
   searchEmails,
   markAsRead,
   listFolders,

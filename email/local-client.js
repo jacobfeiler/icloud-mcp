@@ -242,6 +242,79 @@ async function saveDraft({ to, cc, bcc, subject, body, inReplyTo, replyToAll }) 
 }
 
 /**
+ * Split `raw` on `delim` into exactly `n` fields, keeping any further
+ * occurrences of `delim` inside the final field (so a message body that
+ * happens to contain the delimiter survives intact).
+ */
+function splitFields(raw, delim, n) {
+  const out = [];
+  let rest = raw;
+  for (let i = 0; i < n - 1; i++) {
+    const k = rest.indexOf(delim);
+    if (k < 0) { out.push(rest); rest = ''; continue; }
+    out.push(rest.slice(0, k));
+    rest = rest.slice(k + delim.length);
+  }
+  out.push(rest);
+  return out;
+}
+
+/**
+ * Pull the fields needed to draft a threaded reply to a Mail.app message
+ * (identified by its numeric id from list-emails): the original Message-ID
+ * and References chain for the threading headers, plus sender / subject /
+ * date / body for the quote block. Read straight off the message via
+ * AppleScript - only *writing* a reply's content through AppleScript is
+ * broken on current macOS, reading is fine.
+ */
+async function getMessageForReply(id) {
+  const DELIM = '-=|=-';
+  const script = `
+    tell application "Mail"
+      ${findMessageByIdStmts('theMessage', id)}
+      set msgId to ""
+      set refsHdr to ""
+      repeat with hh in headers of theMessage
+        set hn to (name of hh)
+        ignoring case
+          if hn is "message-id" then set msgId to (content of hh)
+          if hn is "references" then set refsHdr to (content of hh)
+        end ignoring
+      end repeat
+      set theSender to ""
+      try
+        set theSender to (sender of theMessage)
+      end try
+      set theSubject to ""
+      try
+        set theSubject to (subject of theMessage)
+      end try
+      set theWhen to ""
+      try
+        set theWhen to ((date sent of theMessage) as string)
+      end try
+      set theBody to ""
+      try
+        set theBody to (content of theMessage)
+      end try
+      return msgId & "${DELIM}" & refsHdr & "${DELIM}" & theSender & "${DELIM}" & theSubject & "${DELIM}" & theWhen & "${DELIM}" & theBody
+    end tell
+  `;
+
+  const raw = await runAppleScript(script);
+  const [messageId, refsHdr, from, subject, dateStr, text] = splitFields(raw, DELIM, 6);
+  const references = (refsHdr || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  return {
+    messageId: (messageId || '').trim(),
+    references,
+    from: (from || '').trim(),
+    subject: (subject || '').trim(),
+    dateStr: (dateStr || '').trim(),
+    text: text || ''
+  };
+}
+
+/**
  * Search emails
  * @param {Object} options - Search options
  * @returns {Promise<Array>} - Matching emails
@@ -372,6 +445,7 @@ function getMailboxName(folder) {
 module.exports = {
   listEmails,
   readEmail,
+  getMessageForReply,
   sendEmail,
   saveDraft,
   searchEmails,
