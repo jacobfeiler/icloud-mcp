@@ -72,6 +72,27 @@ test('unrelated change leaves DTSTART/DTEND untouched', () => {
   assert.ok(out.includes('SUMMARY:Renamed'), out);
 });
 
+test('replacing a folded property drops its stale continuation lines', () => {
+  const folded = [
+    'BEGIN:VCALENDAR',
+    'BEGIN:VEVENT',
+    'UID:x@icloud-mcp',
+    'DTSTART;TZID=America/Mexico_City:20260829T100000',
+    'DTEND;TZID=America/Mexico_City:20260829T110000',
+    'DESCRIPTION:[assistant:scheduling] thread abc\\n old stale line one',
+    ' continued fragment two',
+    ' continued fragment three',
+    'LOCATION:Office',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+  const out = applyICalChanges(folded, { description: '[assistant:scheduling] fresh block' });
+  assert.ok(out.includes('DESCRIPTION:[assistant:scheduling] fresh block'), out);
+  assert.ok(!out.includes('continued fragment two'), out);
+  assert.ok(!out.includes('continued fragment three'), out);
+  assert.ok(/^LOCATION:Office$/m.test(out), out); // untouched, not eaten
+});
+
 test('month/year rollover on DTEND', () => {
   const out = applyICalChanges(TIMED, { start: '2026-12-31', end: '2026-12-31', isAllDay: true });
   assert.ok(out.includes('DTEND;VALUE=DATE:20270101'), out);

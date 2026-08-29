@@ -362,6 +362,14 @@ function applyICalChanges(ical, { summary, start, end, description, location, is
 
     if (idx !== -1) {
       lines[idx] = `${key}${params}:${value}`;
+      // RFC 5545 line folding: a long value continues on following lines that
+      // begin with a space or tab. Drop those stale continuations, otherwise
+      // the old value's tail gets appended to the new one (seen corrupting
+      // DESCRIPTION marker blocks).
+      let j = idx + 1;
+      while (j < lines.length && /^[ \t]/.test(lines[j])) {
+        lines.splice(j, 1);
+      }
     } else {
       const endIdx = lines.findIndex(l => l.toUpperCase().startsWith('END:VEVENT'));
       lines.splice(endIdx === -1 ? lines.length : endIdx, 0, `${key}${params}:${value}`);
