@@ -206,9 +206,52 @@ async function listEvents(count = 25, daysAhead = 30) {
 }
 
 /**
+ * A bare calendar date with no time component, e.g. "2026-08-29".
+ */
+function isBareDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+/**
+ * Decide whether an event should be written as a true all-day event.
+ * Explicit `isAllDay` wins; otherwise a bare YYYY-MM-DD start (with a bare or
+ * absent end) is treated as all-day.
+ */
+function looksAllDay({ isAllDay, start, end }) {
+  if (isAllDay === true) return true;
+  if (isAllDay === false) return false;
+  return isBareDate(start) && (end === undefined || end === null || isBareDate(end));
+}
+
+/**
+ * Reduce any date input ("2026-08-29", "20260829", or an ISO datetime) to the
+ * iCalendar DATE value "YYYYMMDD", using the calendar day as written (no
+ * timezone shift).
+ */
+function icalDateValue(input) {
+  const s = String(input).trim();
+  const m = s.match(/^(\d{4})-?(\d{2})-?(\d{2})/);
+  if (m) return `${m[1]}${m[2]}${m[3]}`;
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  throw new Error(`Cannot parse date: ${input}`);
+}
+
+/**
+ * Add one day to a "YYYYMMDD" DATE value. Per RFC 5545 an all-day DTEND is
+ * exclusive, so a single-day event ending on day N carries DTEND = N + 1.
+ */
+function addDayToICalDate(ymd) {
+  const d = new Date(Date.UTC(+ymd.slice(0, 4), +ymd.slice(4, 6) - 1, +ymd.slice(6, 8) + 1));
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
  * Create a new event
  */
-async function createEvent({ summary, start, end, description, location, calendarUrl }) {
+async function createEvent({ summary, start, end, description, location, calendarUrl, isAllDay }) {
   const client = await getClient();
 
   // Get calendars if URL not provided
@@ -230,8 +273,21 @@ async function createEvent({ summary, start, end, description, location, calenda
   // Create iCalendar data
   const uid = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}@icloud-mcp`;
 
-  const startDate = new Date(start);
-  const endDate = new Date(end);
+  let dtStartLine;
+  let dtEndLine;
+  if (looksAllDay({ isAllDay, start, end })) {
+    // True all-day: DATE-valued DTSTART/DTEND, DTEND exclusive (day after the
+    // last day). `end` is the inclusive last day and defaults to a single day.
+    const startYmd = icalDateValue(start);
+    const endYmd = (end === undefined || end === null)
+      ? addDayToICalDate(startYmd)
+      : addDayToICalDate(icalDateValue(end));
+    dtStartLine = `DTSTART;VALUE=DATE:${startYmd}`;
+    dtEndLine = `DTEND;VALUE=DATE:${endYmd}`;
+  } else {
+    dtStartLine = `DTSTART:${formatICalDate(new Date(start))}`;
+    dtEndLine = `DTEND:${formatICalDate(new Date(end))}`;
+  }
 
   const icalData = `BEGIN:VCALENDAR
 VERSION:2.0
@@ -239,8 +295,8 @@ PRODID:-//iCloud MCP//EN
 BEGIN:VEVENT
 UID:${uid}
 DTSTAMP:${formatICalDate(new Date())}
-DTSTART:${formatICalDate(startDate)}
-DTEND:${formatICalDate(endDate)}
+${dtStartLine}
+${dtEndLine}
 SUMMARY:${escapeICalText(summary)}${description ? `\nDESCRIPTION:${escapeICalText(description)}` : ''}${location ? `\nLOCATION:${escapeICalText(location)}` : ''}
 END:VEVENT
 END:VCALENDAR`;
@@ -271,29 +327,44 @@ END:VCALENDAR`;
  * @param {Object} changes - Properties to set; undefined values are left alone
  * @returns {string} - Updated iCalendar text
  */
-function applyICalChanges(ical, { summary, start, end, description, location }) {
+function applyICalChanges(ical, { summary, start, end, description, location, isAllDay }) {
+  // All-day when asked explicitly, or (absent an explicit flag) when a bare
+  // YYYY-MM-DD start/end is supplied. Switching an existing timed event to
+  // all-day this way requires passing start and end together.
+  const allDay = isAllDay === true ||
+    (isAllDay === undefined && (isBareDate(start) || isBareDate(end)));
+
   const updates = [];
   if (summary !== undefined) updates.push(['SUMMARY', escapeICalText(summary)]);
-  if (start !== undefined) updates.push(['DTSTART', formatICalDate(new Date(start))]);
-  if (end !== undefined) updates.push(['DTEND', formatICalDate(new Date(end))]);
+  if (allDay) {
+    if (start !== undefined) updates.push(['DTSTART', icalDateValue(start), ';VALUE=DATE']);
+    if (start !== undefined || end !== undefined) {
+      const endSource = (end === undefined || end === null) ? start : end;
+      updates.push(['DTEND', addDayToICalDate(icalDateValue(endSource)), ';VALUE=DATE']);
+    }
+  } else {
+    if (start !== undefined) updates.push(['DTSTART', formatICalDate(new Date(start))]);
+    if (end !== undefined) updates.push(['DTEND', formatICalDate(new Date(end))]);
+  }
   if (description !== undefined) updates.push(['DESCRIPTION', escapeICalText(description)]);
   if (location !== undefined) updates.push(['LOCATION', escapeICalText(location)]);
   updates.push(['DTSTAMP', formatICalDate(new Date())]);
 
   const lines = ical.split(/\r?\n/);
 
-  for (const [key, value] of updates) {
-    // A property may carry parameters, e.g. DTSTART;TZID=Europe/Madrid:...
+  for (const [key, value, params = ''] of updates) {
+    // A property may carry parameters, e.g. DTSTART;TZID=Europe/Madrid:... —
+    // the whole line is replaced, so a timed->all-day switch drops the TZID.
     const idx = lines.findIndex(l => {
       const upper = l.toUpperCase();
       return upper.startsWith(key + ':') || upper.startsWith(key + ';');
     });
 
     if (idx !== -1) {
-      lines[idx] = `${key}:${value}`;
+      lines[idx] = `${key}${params}:${value}`;
     } else {
       const endIdx = lines.findIndex(l => l.toUpperCase().startsWith('END:VEVENT'));
-      lines.splice(endIdx === -1 ? lines.length : endIdx, 0, `${key}:${value}`);
+      lines.splice(endIdx === -1 ? lines.length : endIdx, 0, `${key}${params}:${value}`);
     }
   }
 
@@ -385,5 +456,8 @@ module.exports = {
   deleteEvent,
   parseEvent,
   expandOccurrences,
-  applyICalChanges
+  applyICalChanges,
+  looksAllDay,
+  icalDateValue,
+  addDayToICalDate
 };

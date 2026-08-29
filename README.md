@@ -66,8 +66,8 @@ Tools marked local only return an error in cloud mode, because the iCloud protoc
 ### Calendar
 
 - **list-events**: `count` (number, optional, max 50), `daysAhead` (number, optional)
-- **create-event**: `summary`, `start`, `end` (strings, ISO 8601); `description`, `location` (optional); `calendarUrl` (cloud) or `calendarName` (local)
-- **update-event**: `eventUrl` (string); any of `summary`, `start`, `end`, `description`, `location`. Only the fields you pass change
+- **create-event**: `summary`, `start` (ISO 8601, or bare `YYYY-MM-DD` for all-day); `end` (ISO 8601 for timed; for all-day the inclusive last day, defaults to one day); `isAllDay` (bool, optional); `description`, `location` (optional); `calendarUrl` (cloud) or `calendarName` (local). All-day events are written as real `DTSTART;VALUE=DATE` events, not 24h timed blocks
+- **update-event**: `eventUrl` (string); any of `summary`, `start`, `end`, `description`, `location`, `isAllDay`. Only the fields you pass change. Pass `isAllDay:true` with bare-date `start`/`end` to convert a timed event to all-day (or pass bare dates and let it auto-detect)
 - **delete-event**: `eventUrl` (string)
 - **list-calendars**: no input
 

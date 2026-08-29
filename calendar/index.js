@@ -103,7 +103,9 @@ async function handleCreateEvent(args) {
   if (!args.start) {
     return formatError(new Error('Start date/time is required (ISO 8601 format)'));
   }
-  if (!args.end) {
+  const allDayCreate = args.isAllDay === true ||
+    (args.isAllDay === undefined && /^\d{4}-\d{2}-\d{2}$/.test(String(args.start)));
+  if (!args.end && !allDayCreate) {
     return formatError(new Error('End date/time is required (ISO 8601 format)'));
   }
 
@@ -115,12 +117,17 @@ async function handleCreateEvent(args) {
     end: args.end,
     description: args.description,
     location: args.location,
+    isAllDay: args.isAllDay,
     calendarUrl: args.calendarUrl,   // cloud
     calendarName: args.calendarName  // local
   });
 
+  const allDay = args.isAllDay === true ||
+    (args.isAllDay === undefined && /^\d{4}-\d{2}-\d{2}$/.test(String(args.start || '')));
+  const dateOpts = allDay ? { hour: undefined, minute: undefined } : {};
+
   return formatSuccess(
-    `Event created successfully!\n\nTitle: ${args.summary}\nStart: ${formatDate(new Date(args.start))}\nEnd: ${formatDate(new Date(args.end))}${args.location ? `\nLocation: ${args.location}` : ''}${result.calendar ? `\nCalendar: ${result.calendar}` : ''}\n${local ? 'ID' : 'UID'}: ${result.uid || result.id}`
+    `Event created successfully!${allDay ? ' (all-day)' : ''}\n\nTitle: ${args.summary}\nStart: ${formatDate(new Date(args.start), dateOpts)}\nEnd: ${formatDate(new Date(args.end || args.start), dateOpts)}${args.location ? `\nLocation: ${args.location}` : ''}${result.calendar ? `\nCalendar: ${result.calendar}` : ''}\n${local ? 'ID' : 'UID'}: ${result.uid || result.id}`
   );
 }
 
@@ -133,12 +140,12 @@ async function handleUpdateEvent(args) {
   }
 
   const changes = {};
-  for (const field of ['summary', 'start', 'end', 'description', 'location']) {
+  for (const field of ['summary', 'start', 'end', 'description', 'location', 'isAllDay']) {
     if (args[field] !== undefined) changes[field] = args[field];
   }
 
   if (Object.keys(changes).length === 0) {
-    return formatError(new Error('Nothing to update. Provide at least one of: summary, start, end, description, location.'));
+    return formatError(new Error('Nothing to update. Provide at least one of: summary, start, end, description, location, isAllDay.'));
   }
 
   for (const field of ['start', 'end']) {
@@ -208,11 +215,12 @@ const calendarTools = [
   {
     name: 'create-event',
     title: 'Create Event',
-    description: 'Creates a new calendar event',
+    description: 'Creates a new calendar event. For an all-day event pass isAllDay:true (or a bare YYYY-MM-DD start with no time, which is auto-detected) - it is written as a real DTSTART;VALUE=DATE all-day event, not a 24h timed block.',
     inputSchema: {
       summary: z.string().describe('Event title/summary'),
-      start: z.string().describe('Start date/time in ISO 8601 format (e.g., 2026-01-15T10:00:00)'),
-      end: z.string().describe('End date/time in ISO 8601 format'),
+      start: z.string().describe('Start date/time in ISO 8601 format (e.g., 2026-01-15T10:00:00), or a bare YYYY-MM-DD for an all-day event'),
+      end: z.string().optional().describe('End date/time in ISO 8601 format. For all-day events this is the inclusive last day (YYYY-MM-DD) and defaults to a single day. Required for timed events.'),
+      isAllDay: z.boolean().optional().describe('Force a true all-day event. When true, pass start (and optional end) as bare YYYY-MM-DD dates.'),
       description: z.string().optional().describe('Event description (optional)'),
       location: z.string().optional().describe('Event location (optional)'),
       calendarUrl: z.string().optional().describe('Cloud mode: URL of the calendar to add the event to (optional, uses the first calendar)'),
@@ -228,8 +236,9 @@ const calendarTools = [
     inputSchema: {
       eventUrl: z.string().describe('Event handle from list-events: the URL in cloud mode, the UID in local mode'),
       summary: z.string().optional().describe('New event title (optional)'),
-      start: z.string().optional().describe('New start date/time in ISO 8601 format (optional)'),
-      end: z.string().optional().describe('New end date/time in ISO 8601 format (optional)'),
+      start: z.string().optional().describe('New start date/time in ISO 8601 format, or bare YYYY-MM-DD for all-day (optional)'),
+      end: z.string().optional().describe('New end date/time in ISO 8601 format, or bare YYYY-MM-DD (inclusive last day) for all-day (optional)'),
+      isAllDay: z.boolean().optional().describe('Set true with start+end as YYYY-MM-DD to (re)write the event as a true all-day event; a bare YYYY-MM-DD start/end is auto-detected as all-day even without this flag (optional)'),
       description: z.string().optional().describe('New description (optional)'),
       location: z.string().optional().describe('New location (optional)')
     },
